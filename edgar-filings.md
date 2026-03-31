@@ -4,20 +4,9 @@ description: Download SEC EDGAR 10-K and 10-Q filings into the repo research tre
 
 Download SEC EDGAR filings into the repo using the local `edgar-filings` CLI.
 
-## Before running — environment check
+## Environment
 
-**Stop immediately** if either variable is missing from the environment. Do not invent or guess values. Raise it as a blocking issue and ask the user to set them.
-
-```bash
-echo $SEC_EDGAR_EMAIL        # must be non-empty
-echo $SEC_EDGAR_COMPANY_NAME # must be non-empty
-```
-
-If either is missing, respond with:
-
-> **Blocked:** `SEC_EDGAR_EMAIL` / `SEC_EDGAR_COMPANY_NAME` is not set. Add it to your shell environment or to a `.env` file at the repo root before running this skill.
-
-Only proceed once both are confirmed present.
+The CLI reads `SEC_EDGAR_EMAIL` and `SEC_EDGAR_COMPANY_NAME` from the shell environment or from a `.env` file at the repo root — it loads the file automatically. Do not pre-check or echo these variables. Do not invent values. Just run the CLI; if either variable is missing it will fail with a clear error message — surface that error to the user as-is.
 
 ## CLI reference — exact options only
 
