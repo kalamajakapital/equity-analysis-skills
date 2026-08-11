@@ -53,7 +53,7 @@ MISSING_EXHIBIT_FIXTURE = """<SEC-DOCUMENT>missing-exhibit.txt
 <TYPE>6-K
 <SEQUENCE>1
 <FILENAME>form6k.htm
-<TEXT><html><body><p>Exhibit 99.1 is attached.</p></body></html></TEXT>
+<TEXT><html><body><p>Exhibit 99.1 (ex99-1.htm) is attached.</p></body></html></TEXT>
 </DOCUMENT>
 </SEC-DOCUMENT>"""
 
@@ -62,6 +62,8 @@ class SubmissionBundleTests(unittest.TestCase):
     def test_parse_full_submission_preserves_document_metadata_and_order(self) -> None:
         documents = parse_full_submission(FIXTURE)
 
+        # SEC's sequence controls input order, but the planned public document
+        # value deliberately exposes only type, filename, and contents.
         self.assertEqual(
             [
                 (document.doc_type, document.filename)
@@ -129,7 +131,9 @@ class SubmissionBundleTests(unittest.TestCase):
         self.assertNotIn("EX-99", rendered)
 
     def test_missing_advertised_exhibit_raises_a_clear_error(self) -> None:
-        with self.assertRaisesRegex(ValueError, "EX-99.1"):
+        with self.assertRaisesRegex(
+            ValueError, r"form6k\.htm.*EX-99\.1.*ex99-1\.htm"
+        ):
             select_submission_documents(
                 parse_full_submission(MISSING_EXHIBIT_FIXTURE), "form6k.htm"
             )
