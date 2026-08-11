@@ -347,11 +347,22 @@ class SubmissionBundleTests(unittest.TestCase):
                     cli.main,
                     ["--ticker", "DHT", "--filing", "6-K", "--range-end", "2026-08-11"],
                 )
+                written_raw = download_selected_filings(
+                    ticker="DHT",
+                    forms=["6-K"],
+                    targets=[row],
+                    start=None,
+                    end=date(2026, 8, 11),
+                    company_name="test-company",
+                    email="test@example.com",
+                    output_format="raw",
+                )
 
             self.assertEqual(result.exit_code, 1)
             self.assertIn(ACCESSION, result.output)
             self.assertIn("EX-99.1", result.output)
             self.assertEqual(output_path.read_text(), "existing complete filing")
+            self.assertEqual(written_raw[ACCESSION].read_text(), MISSING_EXHIBIT_FIXTURE)
 
     def test_cli_success_reports_accession_and_selected_exhibits(self) -> None:
         class FakeDownloader:
