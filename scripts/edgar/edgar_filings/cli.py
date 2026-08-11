@@ -416,22 +416,21 @@ def parse_full_submission(contents: str) -> list[SubmissionDocument]:
 
 
 def _advertised_exhibits(contents: str) -> tuple[set[str], list[str]]:
+    reference_pattern = r"\b(?:exhibit|ex)\s*-?\s*(99(?:\.\d+)?)\b"
     exhibit_types = {
         f"EX-{match.group(1)}"
-        for match in re.finditer(
-            r"\b(?:exhibit|ex)\s*-?\s*(99(?:\.\d+)?)\b",
-            contents,
-            re.IGNORECASE,
-        )
+        for match in re.finditer(reference_pattern, contents, re.IGNORECASE)
     }
-    advertised_filenames = [
-        match.group(1)
-        for match in re.finditer(
-            r"\b([\w.-]*ex[-_]?99[\w.-]*\.(?:html?|txt))\b",
-            contents,
-            re.IGNORECASE,
+    advertised_filenames = []
+    for match in re.finditer(reference_pattern, contents, re.IGNORECASE):
+        following = contents[match.end():]
+        boundary = re.search(r"</tr\s*>|[\r\n]", following, re.IGNORECASE)
+        listing_entry = following[:boundary.start()] if boundary else following
+        filename_match = re.search(
+            r"\b([\w.-]+\.(?:html?|txt))\b", listing_entry, re.IGNORECASE
         )
-    ]
+        if filename_match:
+            advertised_filenames.append(filename_match.group(1))
     return exhibit_types, advertised_filenames
 
 
