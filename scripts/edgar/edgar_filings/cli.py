@@ -416,15 +416,22 @@ def parse_full_submission(contents: str) -> list[SubmissionDocument]:
 
 
 def _advertised_exhibits(contents: str) -> tuple[set[str], list[str]]:
-    reference_pattern = r"\b(?:exhibit|ex)\s*-?\s*(99(?:\.\d+)?)\b"
+    display_contents = re.sub(
+        r"</(?:tr|p|li|div|br|h[1-6])\s*>", "\n", contents, flags=re.IGNORECASE
+    )
+    display_contents = re.sub(r"<[^>]*>", " ", display_contents)
+    reference_pattern = (
+        r"(?<![\w.-])(?:exhibit|ex)\s*-?\s*(99(?:\.\d+)?)"
+        r"(?!\.(?:html?|txt)\b|[-_]\d+\.(?:html?|txt)\b)\b"
+    )
     exhibit_types = {
         f"EX-{match.group(1)}"
-        for match in re.finditer(reference_pattern, contents, re.IGNORECASE)
+        for match in re.finditer(reference_pattern, display_contents, re.IGNORECASE)
     }
     advertised_filenames = []
-    for match in re.finditer(reference_pattern, contents, re.IGNORECASE):
-        following = contents[match.end():]
-        boundary = re.search(r"</tr\s*>|[\r\n]", following, re.IGNORECASE)
+    for match in re.finditer(reference_pattern, display_contents, re.IGNORECASE):
+        following = display_contents[match.end():]
+        boundary = re.search(r"[\r\n]", following)
         listing_entry = following[:boundary.start()] if boundary else following
         filename_match = re.search(
             r"\b([\w.-]+\.(?:html?|txt))\b", listing_entry, re.IGNORECASE

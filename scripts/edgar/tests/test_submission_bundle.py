@@ -106,6 +106,21 @@ EXHIBIT_LIST_GENERIC_FILENAME_FIXTURE = """<SEC-DOCUMENT>exhibit-list-generic-fi
 </DOCUMENT>
 </SEC-DOCUMENT>"""
 
+ATTRIBUTE_LINK_AND_EXHIBIT_LIST_FIXTURE = """<SEC-DOCUMENT>attribute-link-and-exhibit-list.txt
+<DOCUMENT>
+<TYPE>6-K
+<SEQUENCE>1
+<FILENAME>form6k.htm
+<TEXT><html><body><a href="ex99-1.htm">Open exhibit</a><table><tr><td>EX-99.1</td><td>earnings-release.htm</td></tr></table></body></html></TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.1
+<SEQUENCE>2
+<FILENAME>earnings-release.htm
+<TEXT><html><body><p>Results</p></body></html></TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>"""
+
 
 class SubmissionBundleTests(unittest.TestCase):
     def test_parse_full_submission_preserves_document_metadata_and_order(self) -> None:
@@ -218,6 +233,18 @@ class SubmissionBundleTests(unittest.TestCase):
                 "form6k.htm",
                 ACCESSION,
             )
+
+    def test_attribute_filename_is_not_an_exhibit_reference(self) -> None:
+        selected = select_submission_documents(
+            parse_full_submission(ATTRIBUTE_LINK_AND_EXHIBIT_LIST_FIXTURE),
+            "form6k.htm",
+            ACCESSION,
+        )
+
+        self.assertEqual([document.filename for document in selected], [
+            "form6k.htm",
+            "earnings-release.htm",
+        ])
 
     def test_downloader_renders_a_complete_dht_style_submission_bundle(self) -> None:
         class FakeDownloader:
