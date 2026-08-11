@@ -507,6 +507,7 @@ def download_selected_filings(
     company_name: str,
     email: str,
     output_format: str,
+    selected_documents_by_accession: dict[str, list[SubmissionDocument]] | None = None,
 ) -> dict[str, Path]:
     paths_by_accession: dict[str, Path] = {}
     ticker_upper = ticker.upper()
@@ -561,21 +562,24 @@ def download_selected_filings(
             output_name = f"{fiscal_year}_Q{quarter}_{row.form}{output_extension(output_format)}"
             output_path = output_dir / output_name
 
+            source_text = source_path.read_text(errors="replace")
+            documents = select_submission_documents(
+                parse_full_submission(source_text),
+                row.primary_document,
+                row.accession_number,
+            )
             if output_format == "raw":
                 output_path.write_bytes(source_path.read_bytes())
             else:
-                source_text = source_path.read_text(errors="replace")
-                documents = select_submission_documents(
-                    parse_full_submission(source_text),
-                    row.primary_document,
-                    row.accession_number,
-                )
                 rendered = (
                     render_submission_text(documents)
                     if output_format == "txt"
                     else render_submission_html(documents)
                 )
                 output_path.write_text(rendered)
+
+            if selected_documents_by_accession is not None:
+                selected_documents_by_accession[row.accession_number] = documents
 
             written_paths[row.accession_number] = output_path
 
@@ -640,6 +644,7 @@ def main(
             f"No matching filings found for {ticker_upper} between {start or 'earliest available'} and {end}."
         )
 
+    selected_documents_by_accession: dict[str, list[SubmissionDocument]] = {}
     try:
         written_paths = download_selected_filings(
             ticker=ticker_upper,
@@ -650,6 +655,7 @@ def main(
             company_name=company_name,
             email=email,
             output_format=output_format,
+            selected_documents_by_accession=selected_documents_by_accession,
         )
     except ValueError as error:
         raise click.ClickException(str(error)) from error
@@ -661,7 +667,12 @@ def main(
         output_path = written_paths.get(row.accession_number)
         if output_path is None:
             continue
-        click.echo(f"{row.form} {row.filing_date.isoformat()} -> {output_path.relative_to(repo_root())}")
+        documents = selected_documents_by_accession.get(row.accession_number, [])
+        source_documents = ", ".join(document.filename for document in documents)
+        click.echo(
+            f"{row.form} {row.filing_date.isoformat()} {row.accession_number} "
+            f"[{source_documents}] -> {output_path.relative_to(repo_root())}"
+        )
 
 
 if __name__ == "__main__":

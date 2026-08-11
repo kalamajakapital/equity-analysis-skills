@@ -338,6 +338,7 @@ class SubmissionBundleTests(unittest.TestCase):
             with (
                 patch.object(cli, "Downloader", FakeDownloader),
                 patch.object(cli, "filings_dir", return_value=Path(output_root)),
+                patch.object(cli, "repo_root", return_value=Path(output_root)),
                 patch.object(cli, "resolve_user_agent", return_value=("test-company", "test@example.com")),
                 patch.object(cli, "fetch_submission_rows", return_value=[row]),
                 patch.object(cli, "select_target_rows", return_value=[row]),
@@ -351,6 +352,50 @@ class SubmissionBundleTests(unittest.TestCase):
             self.assertIn(ACCESSION, result.output)
             self.assertIn("EX-99.1", result.output)
             self.assertEqual(output_path.read_text(), "existing complete filing")
+
+    def test_cli_success_reports_accession_and_selected_exhibits(self) -> None:
+        class FakeDownloader:
+            def __init__(self, company_name: str, email: str, download_root: str) -> None:
+                self.download_root = Path(download_root)
+
+            def get(self, form: str, ticker: str, **kwargs: object) -> None:
+                source = (
+                    self.download_root
+                    / cli.ROOT_SAVE_FOLDER_NAME
+                    / ticker
+                    / form
+                    / ACCESSION
+                    / cli.FILING_FULL_SUBMISSION_FILENAME
+                )
+                source.parent.mkdir(parents=True)
+                source.write_text(FIXTURE)
+
+        row = FilingRecord(
+            accession_number=ACCESSION,
+            form="6-K",
+            filing_date=date(2026, 8, 5),
+            report_date=date(2026, 6, 30),
+            primary_document="form6k.htm",
+            fiscal_year_label=2026,
+            fiscal_quarter=2,
+        )
+        with tempfile.TemporaryDirectory() as output_root:
+            with (
+                patch.object(cli, "Downloader", FakeDownloader),
+                patch.object(cli, "filings_dir", return_value=Path(output_root)),
+                patch.object(cli, "repo_root", return_value=Path(output_root)),
+                patch.object(cli, "resolve_user_agent", return_value=("test-company", "test@example.com")),
+                patch.object(cli, "fetch_submission_rows", return_value=[row]),
+                patch.object(cli, "select_target_rows", return_value=[row]),
+            ):
+                result = CliRunner().invoke(
+                    cli.main,
+                    ["--ticker", "DHT", "--filing", "6-K", "--range-end", "2026-08-11"],
+                )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn(ACCESSION, result.output)
+        self.assertIn("ex99-1.htm", result.output)
 
 
 if __name__ == "__main__":
