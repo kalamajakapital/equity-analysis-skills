@@ -9,6 +9,8 @@ from edgar_filings.cli import (
 )
 
 
+ACCESSION = "0000000-26-000001"
+
 FIXTURE = """<SEC-DOCUMENT>demo.txt<SEC-HEADER>header</SEC-HEADER>
 <DOCUMENT>
 <TYPE>6-K
@@ -62,18 +64,17 @@ class SubmissionBundleTests(unittest.TestCase):
     def test_parse_full_submission_preserves_document_metadata_and_order(self) -> None:
         documents = parse_full_submission(FIXTURE)
 
-        # SEC's sequence controls input order, but the planned public document
-        # value deliberately exposes only type, filename, and contents.
+        # SEC sequence is both retained metadata and the source document order.
         self.assertEqual(
             [
-                (document.doc_type, document.filename)
+                (document.doc_type, document.sequence, document.filename)
                 for document in documents
             ],
             [
-                ("6-K", "form6k.htm"),
-                ("EX-99.1", "ex99-1.htm"),
-                ("EX-99.2", "ex99-2.htm"),
-                ("GRAPHIC", "image.jpg"),
+                ("6-K", 1, "form6k.htm"),
+                ("EX-99.1", 2, "ex99-1.htm"),
+                ("EX-99.2", 3, "ex99-2.htm"),
+                ("GRAPHIC", 4, "image.jpg"),
             ],
         )
         self.assertIsInstance(documents[0], SubmissionDocument)
@@ -81,21 +82,26 @@ class SubmissionBundleTests(unittest.TestCase):
 
     def test_select_submission_documents_keeps_primary_and_exhibits_in_order(self) -> None:
         selected = select_submission_documents(
-            parse_full_submission(FIXTURE), "form6k.htm"
+            parse_full_submission(FIXTURE), "form6k.htm", ACCESSION
         )
 
         self.assertEqual(
-            [(document.doc_type, document.filename) for document in selected],
             [
-                ("6-K", "form6k.htm"),
-                ("EX-99.1", "ex99-1.htm"),
-                ("EX-99.2", "ex99-2.htm"),
+                (document.doc_type, document.sequence, document.filename)
+                for document in selected
+            ],
+            [
+                ("6-K", 1, "form6k.htm"),
+                ("EX-99.1", 2, "ex99-1.htm"),
+                ("EX-99.2", 3, "ex99-2.htm"),
             ],
         )
 
     def test_render_submission_text_includes_primary_and_all_exhibits_with_separators(self) -> None:
         rendered = render_submission_text(
-            select_submission_documents(parse_full_submission(FIXTURE), "form6k.htm")
+            select_submission_documents(
+                parse_full_submission(FIXTURE), "form6k.htm", ACCESSION
+            )
         )
 
         self.assertIn("Cover", rendered)
@@ -110,7 +116,9 @@ class SubmissionBundleTests(unittest.TestCase):
 
     def test_render_submission_html_includes_all_document_headings(self) -> None:
         rendered = render_submission_html(
-            select_submission_documents(parse_full_submission(FIXTURE), "form6k.htm")
+            select_submission_documents(
+                parse_full_submission(FIXTURE), "form6k.htm", ACCESSION
+            )
         )
 
         self.assertIn("<h1>6-K form6k.htm</h1>", rendered)
@@ -123,7 +131,7 @@ class SubmissionBundleTests(unittest.TestCase):
     def test_no_exhibit_submission_renders_primary_once_without_exhibit_separator(self) -> None:
         rendered = render_submission_text(
             select_submission_documents(
-                parse_full_submission(NO_EXHIBIT_FIXTURE), "form6k.htm"
+                parse_full_submission(NO_EXHIBIT_FIXTURE), "form6k.htm", ACCESSION
             )
         )
 
@@ -132,10 +140,10 @@ class SubmissionBundleTests(unittest.TestCase):
 
     def test_missing_advertised_exhibit_raises_a_clear_error(self) -> None:
         with self.assertRaisesRegex(
-            ValueError, r"form6k\.htm.*EX-99\.1.*ex99-1\.htm"
+            ValueError, r"0000000-26-000001.*EX-99\.1.*ex99-1\.htm"
         ):
             select_submission_documents(
-                parse_full_submission(MISSING_EXHIBIT_FIXTURE), "form6k.htm"
+                parse_full_submission(MISSING_EXHIBIT_FIXTURE), "form6k.htm", ACCESSION
             )
 
 
