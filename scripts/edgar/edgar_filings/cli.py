@@ -38,6 +38,14 @@ class FilingRecord:
     fiscal_quarter: int | None = None
 
 
+@dataclass(frozen=True)
+class SubmissionDocument:
+    doc_type: str
+    sequence: int
+    filename: str
+    contents: str
+
+
 def repo_root() -> Path:
     try:
         import subprocess
@@ -373,6 +381,102 @@ def convert_html_to_text(contents: str) -> str:
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip() + "\n"
+
+
+def parse_full_submission(contents: str) -> list[SubmissionDocument]:
+    """Extract complete document blocks from a SEC full-submission file."""
+    documents: list[SubmissionDocument] = []
+    document_blocks = re.finditer(
+        r"<DOCUMENT>\s*(.*?)</DOCUMENT\s*>", contents, re.IGNORECASE | re.DOTALL
+    )
+
+    def field(block: str, name: str) -> str | None:
+        match = re.search(rf"<{name}>\s*([^<\r\n]+)", block, re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    for block_match in document_blocks:
+        block = block_match.group(1)
+        doc_type = field(block, "TYPE")
+        sequence_text = field(block, "SEQUENCE")
+        filename = field(block, "FILENAME")
+        text_match = re.search(
+            r"<TEXT>(.*?)(?:</TEXT\s*>|$)", block, re.IGNORECASE | re.DOTALL
+        )
+        if not all((doc_type, sequence_text, filename, text_match)):
+            continue
+        try:
+            sequence = int(sequence_text)
+        except ValueError:
+            continue
+        documents.append(
+            SubmissionDocument(doc_type, sequence, filename, text_match.group(1))
+        )
+
+    return sorted(documents, key=lambda document: document.sequence)
+
+
+def _advertised_exhibits(contents: str) -> tuple[set[str], list[str]]:
+    exhibit_types = {
+        f"EX-{match.group(1)}"
+        for match in re.finditer(r"\bexhibit\s+(99(?:\.\d+)?)\b", contents, re.IGNORECASE)
+    }
+    advertised_filenames = [
+        match.group(1)
+        for match in re.finditer(
+            r"\b([\w.-]+\.(?:html?|txt))\b", contents, re.IGNORECASE
+        )
+    ]
+    return exhibit_types, advertised_filenames
+
+
+def select_submission_documents(
+    documents: list[SubmissionDocument], primary_document: str, accession_number: str
+) -> list[SubmissionDocument]:
+    """Keep the primary document and all 99-series exhibits in SEC sequence order."""
+    primary_name = Path(primary_document).name.casefold()
+    primary = next(
+        (document for document in documents if Path(document.filename).name.casefold() == primary_name),
+        None,
+    )
+    if primary is None:
+        raise ValueError(
+            f"Primary document {primary_document!r} is missing from submission {accession_number}."
+        )
+
+    exhibits = [
+        document
+        for document in documents
+        if document is not primary and document.doc_type.upper().startswith("EX-99")
+    ]
+    selected = [primary, *exhibits]
+
+    advertised_types, advertised_filenames = _advertised_exhibits(primary.contents)
+    selected_types = {document.doc_type.upper() for document in exhibits}
+    missing_types = sorted(advertised_types - selected_types)
+    if missing_types:
+        filename_text = ", ".join(advertised_filenames) or "none"
+        raise ValueError(
+            f"Submission {accession_number} advertises missing exhibit(s) "
+            f"{', '.join(missing_types)}; advertised filename(s): {filename_text}."
+        )
+    return selected
+
+
+def render_submission_text(documents: list[SubmissionDocument]) -> str:
+    sections = [
+        f"===== {document.doc_type} {document.filename} =====\n\n"
+        f"{convert_html_to_text(document.contents).rstrip()}"
+        for document in documents
+    ]
+    return "\n\n".join(sections) + "\n"
+
+
+def render_submission_html(documents: list[SubmissionDocument]) -> str:
+    sections = []
+    for document in documents:
+        heading = html.escape(f"{document.doc_type} {document.filename}")
+        sections.append(f"<h1>{heading}</h1>\n{document.contents}")
+    return "<!DOCTYPE html>\n<html><body>\n" + "\n<hr>\n".join(sections) + "\n</body></html>\n"
 
 
 def download_selected_filings(
