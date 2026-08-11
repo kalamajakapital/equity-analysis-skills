@@ -517,25 +517,14 @@ def download_selected_filings(
             )
 
             for row in form_targets:
-                if output_format == "raw":
-                    source_path = (
-                        Path(temp_dir)
-                        / ROOT_SAVE_FOLDER_NAME
-                        / ticker_upper
-                        / form
-                        / row.accession_number
-                        / FILING_FULL_SUBMISSION_FILENAME
-                    )
-                else:
-                    details_suffix = Path(row.primary_document).suffix.replace("htm", "html")
-                    source_path = (
-                        Path(temp_dir)
-                        / ROOT_SAVE_FOLDER_NAME
-                        / ticker_upper
-                        / form
-                        / row.accession_number
-                        / f"primary-document{details_suffix}"
-                    )
+                source_path = (
+                    Path(temp_dir)
+                    / ROOT_SAVE_FOLDER_NAME
+                    / ticker_upper
+                    / form
+                    / row.accession_number
+                    / FILING_FULL_SUBMISSION_FILENAME
+                )
                 if source_path.exists():
                     paths_by_accession[row.accession_number] = source_path
 
@@ -552,12 +541,22 @@ def download_selected_filings(
             quarter = row.fiscal_quarter or 4
             output_name = f"{fiscal_year}_Q{quarter}_{row.form}{output_extension(output_format)}"
             output_path = output_dir / output_name
-            source_text = source_path.read_text(errors="replace")
 
-            if output_format == "txt":
-                output_path.write_text(convert_html_to_text(source_text))
+            if output_format == "raw":
+                output_path.write_bytes(source_path.read_bytes())
             else:
-                output_path.write_text(source_text)
+                source_text = source_path.read_text(errors="replace")
+                documents = select_submission_documents(
+                    parse_full_submission(source_text),
+                    row.primary_document,
+                    row.accession_number,
+                )
+                rendered = (
+                    render_submission_text(documents)
+                    if output_format == "txt"
+                    else render_submission_html(documents)
+                )
+                output_path.write_text(rendered)
 
             written_paths[row.accession_number] = output_path
 
@@ -622,16 +621,19 @@ def main(
             f"No matching filings found for {ticker_upper} between {start or 'earliest available'} and {end}."
         )
 
-    written_paths = download_selected_filings(
-        ticker=ticker_upper,
-        forms=forms,
-        targets=targets,
-        start=start,
-        end=end,
-        company_name=company_name,
-        email=email,
-        output_format=output_format,
-    )
+    try:
+        written_paths = download_selected_filings(
+            ticker=ticker_upper,
+            forms=forms,
+            targets=targets,
+            start=start,
+            end=end,
+            company_name=company_name,
+            email=email,
+            output_format=output_format,
+        )
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
     if not written_paths:
         raise click.ClickException("Downloader completed, but no filing files were written.")
