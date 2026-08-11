@@ -67,6 +67,30 @@ MISSING_EXHIBIT_FIXTURE = """<SEC-DOCUMENT>missing-exhibit.txt
 </DOCUMENT>
 </SEC-DOCUMENT>"""
 
+EXHIBIT_LIST_FIXTURE = """<SEC-DOCUMENT>exhibit-list.txt
+<DOCUMENT>
+<TYPE>6-K
+<SEQUENCE>1
+<FILENAME>form6k.htm
+<TEXT><html><body><table><tr><td>EX-99.1</td><td>ex99-1.htm</td></tr></table></body></html></TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>"""
+
+EXHIBIT_LIST_WRONG_FILENAME_FIXTURE = """<SEC-DOCUMENT>exhibit-list-wrong-filename.txt
+<DOCUMENT>
+<TYPE>6-K
+<SEQUENCE>1
+<FILENAME>form6k.htm
+<TEXT><html><body><table><tr><td>EX-99.1</td><td>ex99-1.htm</td></tr></table></body></html></TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.1
+<SEQUENCE>2
+<FILENAME>wrong-exhibit.htm
+<TEXT><html><body><p>Wrong file</p></body></html></TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>"""
+
 
 class SubmissionBundleTests(unittest.TestCase):
     def test_parse_full_submission_preserves_document_metadata_and_order(self) -> None:
@@ -152,6 +176,22 @@ class SubmissionBundleTests(unittest.TestCase):
         ):
             select_submission_documents(
                 parse_full_submission(MISSING_EXHIBIT_FIXTURE), "form6k.htm", ACCESSION
+            )
+
+    def test_exhibit_list_abbreviation_requires_its_advertised_document_and_filename(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, r"0000000-26-000001.*EX-99\.1.*ex99-1\.htm"
+        ):
+            select_submission_documents(
+                parse_full_submission(EXHIBIT_LIST_FIXTURE), "form6k.htm", ACCESSION
+            )
+
+    def test_exhibit_list_requires_the_advertised_filename_even_when_type_exists(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"0000000-26-000001.*ex99-1\.htm"):
+            select_submission_documents(
+                parse_full_submission(EXHIBIT_LIST_WRONG_FILENAME_FIXTURE),
+                "form6k.htm",
+                ACCESSION,
             )
 
     def test_downloader_renders_a_complete_dht_style_submission_bundle(self) -> None:

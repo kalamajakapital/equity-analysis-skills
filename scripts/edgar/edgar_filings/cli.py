@@ -418,12 +418,18 @@ def parse_full_submission(contents: str) -> list[SubmissionDocument]:
 def _advertised_exhibits(contents: str) -> tuple[set[str], list[str]]:
     exhibit_types = {
         f"EX-{match.group(1)}"
-        for match in re.finditer(r"\bexhibit\s+(99(?:\.\d+)?)\b", contents, re.IGNORECASE)
+        for match in re.finditer(
+            r"\b(?:exhibit|ex)\s*-?\s*(99(?:\.\d+)?)\b",
+            contents,
+            re.IGNORECASE,
+        )
     }
     advertised_filenames = [
         match.group(1)
         for match in re.finditer(
-            r"\b([\w.-]+\.(?:html?|txt))\b", contents, re.IGNORECASE
+            r"\b([\w.-]*ex[-_]?99[\w.-]*\.(?:html?|txt))\b",
+            contents,
+            re.IGNORECASE,
         )
     ]
     return exhibit_types, advertised_filenames
@@ -453,11 +459,18 @@ def select_submission_documents(
     advertised_types, advertised_filenames = _advertised_exhibits(primary.contents)
     selected_types = {document.doc_type.upper() for document in exhibits}
     missing_types = sorted(advertised_types - selected_types)
-    if missing_types:
-        filename_text = ", ".join(advertised_filenames) or "none"
+    selected_filenames = {Path(document.filename).name.casefold() for document in exhibits}
+    missing_filenames = sorted(
+        filename
+        for filename in advertised_filenames
+        if Path(filename).name.casefold() not in selected_filenames
+    )
+    if missing_types or missing_filenames:
+        missing_types_text = ", ".join(missing_types) or "none"
+        missing_filenames_text = ", ".join(missing_filenames) or "none"
         raise ValueError(
             f"Submission {accession_number} advertises missing exhibit(s) "
-            f"{', '.join(missing_types)}; advertised filename(s): {filename_text}."
+            f"type(s): {missing_types_text}; filename(s): {missing_filenames_text}."
         )
     return selected
 
