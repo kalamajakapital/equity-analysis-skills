@@ -38,6 +38,14 @@ class FilingRecord:
     fiscal_quarter: int | None = None
 
 
+@dataclass(frozen=True)
+class SubmissionDocument:
+    doc_type: str
+    sequence: int
+    filename: str
+    contents: str
+
+
 def repo_root() -> Path:
     try:
         import subprocess
@@ -375,6 +383,121 @@ def convert_html_to_text(contents: str) -> str:
     return text.strip() + "\n"
 
 
+def parse_full_submission(contents: str) -> list[SubmissionDocument]:
+    """Extract complete document blocks from a SEC full-submission file."""
+    documents: list[SubmissionDocument] = []
+    document_blocks = re.finditer(
+        r"<DOCUMENT>\s*(.*?)</DOCUMENT\s*>", contents, re.IGNORECASE | re.DOTALL
+    )
+
+    def field(block: str, name: str) -> str | None:
+        match = re.search(rf"<{name}>\s*([^<\r\n]+)", block, re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    for block_match in document_blocks:
+        block = block_match.group(1)
+        doc_type = field(block, "TYPE")
+        sequence_text = field(block, "SEQUENCE")
+        filename = field(block, "FILENAME")
+        text_match = re.search(
+            r"<TEXT>(.*?)(?:</TEXT\s*>|$)", block, re.IGNORECASE | re.DOTALL
+        )
+        if not all((doc_type, sequence_text, filename, text_match)):
+            continue
+        try:
+            sequence = int(sequence_text)
+        except ValueError:
+            continue
+        documents.append(
+            SubmissionDocument(doc_type, sequence, filename, text_match.group(1))
+        )
+
+    return sorted(documents, key=lambda document: document.sequence)
+
+
+def _advertised_exhibits(contents: str) -> tuple[set[str], list[str]]:
+    display_contents = re.sub(
+        r"</(?:tr|p|li|div|br|h[1-6])\s*>", "\n", contents, flags=re.IGNORECASE
+    )
+    display_contents = re.sub(r"<[^>]*>", " ", display_contents)
+    reference_pattern = (
+        r"(?<![\w.-])(?:exhibit|ex)\s*-?\s*(99(?:\.\d+)?)"
+        r"(?!\.(?:html?|txt)\b|[-_]\d+\.(?:html?|txt)\b)\b"
+    )
+    exhibit_types = {
+        f"EX-{match.group(1)}"
+        for match in re.finditer(reference_pattern, display_contents, re.IGNORECASE)
+    }
+    advertised_filenames = []
+    for match in re.finditer(reference_pattern, display_contents, re.IGNORECASE):
+        following = display_contents[match.end():]
+        boundary = re.search(r"[\r\n]", following)
+        listing_entry = following[:boundary.start()] if boundary else following
+        filename_match = re.search(
+            r"\b([\w.-]+\.(?:html?|txt))\b", listing_entry, re.IGNORECASE
+        )
+        if filename_match:
+            advertised_filenames.append(filename_match.group(1))
+    return exhibit_types, advertised_filenames
+
+
+def select_submission_documents(
+    documents: list[SubmissionDocument], primary_document: str, accession_number: str
+) -> list[SubmissionDocument]:
+    """Keep the primary document and all 99-series exhibits in SEC sequence order."""
+    primary_name = Path(primary_document).name.casefold()
+    primary = next(
+        (document for document in documents if Path(document.filename).name.casefold() == primary_name),
+        None,
+    )
+    if primary is None:
+        raise ValueError(
+            f"Primary document {primary_document!r} is missing from submission {accession_number}."
+        )
+
+    exhibits = [
+        document
+        for document in documents
+        if document is not primary and document.doc_type.upper().startswith("EX-99")
+    ]
+    selected = [primary, *exhibits]
+
+    advertised_types, advertised_filenames = _advertised_exhibits(primary.contents)
+    selected_types = {document.doc_type.upper() for document in exhibits}
+    missing_types = sorted(advertised_types - selected_types)
+    selected_filenames = {Path(document.filename).name.casefold() for document in exhibits}
+    missing_filenames = sorted(
+        filename
+        for filename in advertised_filenames
+        if Path(filename).name.casefold() not in selected_filenames
+    )
+    if missing_types or missing_filenames:
+        missing_types_text = ", ".join(missing_types) or "none"
+        missing_filenames_text = ", ".join(missing_filenames) or "none"
+        raise ValueError(
+            f"Submission {accession_number} advertises missing exhibit(s) "
+            f"type(s): {missing_types_text}; filename(s): {missing_filenames_text}."
+        )
+    return selected
+
+
+def render_submission_text(documents: list[SubmissionDocument]) -> str:
+    sections = [
+        f"===== {document.doc_type} {document.filename} =====\n\n"
+        f"{convert_html_to_text(document.contents).rstrip()}"
+        for document in documents
+    ]
+    return "\n\n".join(sections) + "\n"
+
+
+def render_submission_html(documents: list[SubmissionDocument]) -> str:
+    sections = []
+    for document in documents:
+        heading = html.escape(f"{document.doc_type} {document.filename}")
+        sections.append(f"<h1>{heading}</h1>\n{document.contents}")
+    return "<!DOCTYPE html>\n<html><body>\n" + "\n<hr>\n".join(sections) + "\n</body></html>\n"
+
+
 def download_selected_filings(
     ticker: str,
     forms: list[str],
@@ -384,6 +507,7 @@ def download_selected_filings(
     company_name: str,
     email: str,
     output_format: str,
+    selected_documents_by_accession: dict[str, list[SubmissionDocument]] | None = None,
 ) -> dict[str, Path]:
     paths_by_accession: dict[str, Path] = {}
     ticker_upper = ticker.upper()
@@ -413,25 +537,14 @@ def download_selected_filings(
             )
 
             for row in form_targets:
-                if output_format == "raw":
-                    source_path = (
-                        Path(temp_dir)
-                        / ROOT_SAVE_FOLDER_NAME
-                        / ticker_upper
-                        / form
-                        / row.accession_number
-                        / FILING_FULL_SUBMISSION_FILENAME
-                    )
-                else:
-                    details_suffix = Path(row.primary_document).suffix.replace("htm", "html")
-                    source_path = (
-                        Path(temp_dir)
-                        / ROOT_SAVE_FOLDER_NAME
-                        / ticker_upper
-                        / form
-                        / row.accession_number
-                        / f"primary-document{details_suffix}"
-                    )
+                source_path = (
+                    Path(temp_dir)
+                    / ROOT_SAVE_FOLDER_NAME
+                    / ticker_upper
+                    / form
+                    / row.accession_number
+                    / FILING_FULL_SUBMISSION_FILENAME
+                )
                 if source_path.exists():
                     paths_by_accession[row.accession_number] = source_path
 
@@ -448,12 +561,39 @@ def download_selected_filings(
             quarter = row.fiscal_quarter or 4
             output_name = f"{fiscal_year}_Q{quarter}_{row.form}{output_extension(output_format)}"
             output_path = output_dir / output_name
-            source_text = source_path.read_text(errors="replace")
 
-            if output_format == "txt":
-                output_path.write_text(convert_html_to_text(source_text))
+            if output_format == "raw":
+                output_path.write_bytes(source_path.read_bytes())
+                if selected_documents_by_accession is not None:
+                    try:
+                        parsed_documents = parse_full_submission(
+                            source_path.read_text(errors="replace")
+                        )
+                        primary_name = Path(row.primary_document).name.casefold()
+                        documents = [
+                            document
+                            for document in parsed_documents
+                            if document.filename.casefold() == primary_name
+                            or document.doc_type.upper().startswith("EX-99")
+                        ]
+                    except ValueError:
+                        documents = []
             else:
-                output_path.write_text(source_text)
+                source_text = source_path.read_text(errors="replace")
+                documents = select_submission_documents(
+                    parse_full_submission(source_text),
+                    row.primary_document,
+                    row.accession_number,
+                )
+                rendered = (
+                    render_submission_text(documents)
+                    if output_format == "txt"
+                    else render_submission_html(documents)
+                )
+                output_path.write_text(rendered)
+
+            if selected_documents_by_accession is not None:
+                selected_documents_by_accession[row.accession_number] = documents
 
             written_paths[row.accession_number] = output_path
 
@@ -518,16 +658,21 @@ def main(
             f"No matching filings found for {ticker_upper} between {start or 'earliest available'} and {end}."
         )
 
-    written_paths = download_selected_filings(
-        ticker=ticker_upper,
-        forms=forms,
-        targets=targets,
-        start=start,
-        end=end,
-        company_name=company_name,
-        email=email,
-        output_format=output_format,
-    )
+    selected_documents_by_accession: dict[str, list[SubmissionDocument]] = {}
+    try:
+        written_paths = download_selected_filings(
+            ticker=ticker_upper,
+            forms=forms,
+            targets=targets,
+            start=start,
+            end=end,
+            company_name=company_name,
+            email=email,
+            output_format=output_format,
+            selected_documents_by_accession=selected_documents_by_accession,
+        )
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
     if not written_paths:
         raise click.ClickException("Downloader completed, but no filing files were written.")
@@ -536,7 +681,12 @@ def main(
         output_path = written_paths.get(row.accession_number)
         if output_path is None:
             continue
-        click.echo(f"{row.form} {row.filing_date.isoformat()} -> {output_path.relative_to(repo_root())}")
+        documents = selected_documents_by_accession.get(row.accession_number, [])
+        source_documents = ", ".join(document.filename for document in documents)
+        click.echo(
+            f"{row.form} {row.filing_date.isoformat()} {row.accession_number} "
+            f"[{source_documents}] -> {output_path.relative_to(repo_root())}"
+        )
 
 
 if __name__ == "__main__":
