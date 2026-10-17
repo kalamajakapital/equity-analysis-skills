@@ -1,0 +1,28 @@
+<SEC-DOCUMENT>0001193125-26-282767.txt : 20260625
+<SEC-HEADER>
+HEADER DATA
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-K
+<DESCRIPTION>FORM 8-K
+<TEXT>
+<html><body><p>Cover page for the quarter ended September 30, 2026.</p></body></html>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.1
+<DESCRIPTION>PRESS RELEASE
+<TEXT>
+<html><body>
+<p>Net revenue increased 21% YoY to $739.1 million.</p>
+<table><tr><td>Net revenue</td><td>739.1</td></tr></table>
+</body></html>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-101
+<DESCRIPTION>XBRL TAXONOMY
+<TEXT>
+<taxxn>machine-readable-noise</taxxn>
+</TEXT>
+</DOCUMENT>
