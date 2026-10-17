@@ -521,10 +521,11 @@ def output_names_for_targets(targets: list[FilingRecord]) -> dict[str, str]:
             # Theoretical-only guard: two distinct accessions sharing the
             # same last-6 characters would silently map to one path. On
             # collision, rebuild the name from the full dash-stripped
-            # accession (unique per filing) instead of appending scope-derived
-            # markers, so the name stays a pure function of the row. Because
-            # accession6 is stable per filing, the guard can never make a
-            # name depend on what else is being fetched.
+            # accession (unique per filing). The fallback name is still a
+            # pure function of the row, but WHICH name applies depends on
+            # whether the colliding sibling is in scope — acceptably
+            # theoretical, since accession6 collisions across filing agents
+            # are vanishingly rare.
             if name in used:
                 name = f"{base}_{row.filing_date.isoformat()}_{row.accession_number.replace('-', '')}"
             while name in used:

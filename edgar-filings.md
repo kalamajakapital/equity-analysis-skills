@@ -33,7 +33,8 @@ There is no `--output-dir`. Output path is always `research/data/<TICKER>/filing
   headers. For 6-K and 8-K filers the primary document is only a cover page —
   the results content lives in exhibits such as EX-99.1. Never rely on the
   cover page alone; check the file contains the exhibit before analysing.
-- Machine-readable XBRL taxonomy documents (EX-100 to EX-109) are skipped.
+- Machine-readable XBRL taxonomy documents (EX-100 to EX-109) and binary or
+  data artifacts (images, ZIP, XLS, XML, JSON) are skipped.
 - Event forms (6-K, 8-K) ALWAYS carry the filing date and an accession
   suffix — the name is deterministic and refetch-stable regardless of what
   else is in the fetch: `2027_Q2_6-K_2026-10-15_282767.txt`. Periodic forms
