@@ -4,13 +4,12 @@ import html
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
-
-from collections import Counter
 
 import click
 from sec_edgar_downloader import Downloader
@@ -173,11 +172,14 @@ def fetch_submission_rows(
 
 
 def infer_fy_end_month(rows: list[FilingRecord]) -> int | None:
-    """Infer the fiscal-year-end month from the first annual report's period date."""
-    for row in rows:
-        if row.form in ANNUAL_FORMS and row.report_date is not None:
-            return row.report_date.month
-    return None
+    """Infer the fiscal-year-end month from the most recent annual report's period date."""
+    annual_rows = [
+        row for row in rows if row.form in ANNUAL_FORMS and row.report_date is not None
+    ]
+    if not annual_rows:
+        return None
+    latest = max(annual_rows, key=lambda row: row.filing_date)
+    return latest.report_date.month
 
 
 def fiscal_label_from_report_date(report_date: date, fy_end_month: int) -> tuple[int, int]:
@@ -212,12 +214,8 @@ def assign_fiscal_labels(rows: list[FilingRecord]) -> list[FilingRecord]:
                 )
 
             labeled.append(
-                FilingRecord(
-                    accession_number=row.accession_number,
-                    form=row.form,
-                    filing_date=row.filing_date,
-                    report_date=row.report_date,
-                    primary_document=row.primary_document,
+                replace(
+                    row,
                     fiscal_year_label=fiscal_year,
                     fiscal_quarter=4,
                 )
@@ -231,12 +229,8 @@ def assign_fiscal_labels(rows: list[FilingRecord]) -> list[FilingRecord]:
                 row.report_date, fy_end_month
             )
             labeled.append(
-                FilingRecord(
-                    accession_number=row.accession_number,
-                    form=row.form,
-                    filing_date=row.filing_date,
-                    report_date=row.report_date,
-                    primary_document=row.primary_document,
+                replace(
+                    row,
                     fiscal_year_label=fiscal_year,
                     fiscal_quarter=quarter,
                 )
@@ -249,12 +243,8 @@ def assign_fiscal_labels(rows: list[FilingRecord]) -> list[FilingRecord]:
         quarter = next_quarter if next_quarter <= 3 else None
 
         labeled.append(
-            FilingRecord(
-                accession_number=row.accession_number,
-                form=row.form,
-                filing_date=row.filing_date,
-                report_date=row.report_date,
-                primary_document=row.primary_document,
+            replace(
+                row,
                 fiscal_year_label=fiscal_year,
                 fiscal_quarter=quarter,
             )
@@ -437,12 +427,16 @@ class SubmissionDocument:
 def parse_submission_documents(raw_submission: str) -> list[SubmissionDocument]:
     """Split a full EDGAR submission text file into its <DOCUMENT> sections."""
     documents: list[SubmissionDocument] = []
+    skipped_types: list[str] = []
     chunks = re.split(r"<DOCUMENT>", raw_submission, flags=re.IGNORECASE)[1:]
     for chunk in chunks:
         type_match = re.search(r"<TYPE>\s*([^\r\n<]+)", chunk, re.IGNORECASE)
         desc_match = re.search(r"<DESCRIPTION>\s*([^\r\n<]*)", chunk, re.IGNORECASE)
         text_match = re.search(r"<TEXT>(.*?)</TEXT>", chunk, re.IGNORECASE | re.DOTALL)
         if text_match is None:
+            skipped_types.append(
+                (type_match.group(1) if type_match else "").strip().upper()
+            )
             continue
         documents.append(
             SubmissionDocument(
@@ -451,6 +445,14 @@ def parse_submission_documents(raw_submission: str) -> list[SubmissionDocument]:
                 content=text_match.group(1),
             )
         )
+
+    if skipped_types:
+        for doc_type in skipped_types:
+            click.echo(
+                f"warning: document {doc_type or 'unnamed'} has no <TEXT> block; skipped",
+                err=True,
+            )
+
     return documents
 
 
@@ -480,6 +482,12 @@ def submission_to_text(raw_submission: str) -> str:
         r"<SEC-HEADER>.*?</SEC-HEADER>", "", raw_submission,
         flags=re.DOTALL | re.IGNORECASE,
     )
+    if re.search(r"<SEC-HEADER>", without_header, re.IGNORECASE):
+        # Unclosed <SEC-HEADER>: strip through the end of the header-opening
+        # line rather than leaking header junk into the converted text.
+        without_header = re.sub(
+            r"(?is)^.*<SEC-HEADER>[^\n]*\n?", "", without_header, count=1
+        )
     return convert_html_to_text(without_header)
 
 
@@ -495,7 +503,8 @@ def output_names_for_targets(targets: list[FilingRecord]) -> dict[str, str]:
     for row in targets:
         fiscal_year = row.fiscal_year_label or row.filing_date.year
         quarter = row.fiscal_quarter or 4
-        base_names[row.accession_number] = f"{fiscal_year}_Q{quarter}_{row.form}"
+        form = re.sub(r"[^A-Za-z0-9.-]", "_", row.form)
+        base_names[row.accession_number] = f"{fiscal_year}_Q{quarter}_{form}"
 
     collision_counts = Counter(base_names.values())
 
@@ -603,6 +612,53 @@ def download_selected_filings(
         return written_paths
 
 
+def classify_corpus(
+    output_dir: Path,
+    all_rows: list[FilingRecord],
+    targets: list[FilingRecord],
+) -> tuple[list[tuple[FilingRecord, Path]], list[FilingRecord], list[Path]]:
+    """Classify on-disk filing artifacts against EDGAR metadata.
+
+    ``present``/``missing`` are computed from the range-filtered ``targets``.
+    The orphan scan accepts any file whose name matches a filing EDGAR knows
+    about: names are computed over ``all_rows`` (the full fetched history for
+    the requested forms plus the always-included annual forms) as well as
+    ``targets``, so files outside the requested range or form are not falsely
+    flagged as overwritten or mislabelled downloads.
+    """
+    extensions = [output_extension(fmt) for fmt in ("txt", "raw", "html")]
+
+    target_names = output_names_for_targets(targets)
+    expected_files: set[str] = set()
+    for rows in (targets, all_rows):
+        for name in output_names_for_targets(rows).values():
+            expected_files.update(f"{name}{ext}" for ext in extensions)
+
+    present: list[tuple[FilingRecord, Path]] = []
+    missing: list[FilingRecord] = []
+    for row in targets:
+        base = target_names[row.accession_number]
+        candidates = [output_dir / f"{base}{ext}" for ext in extensions]
+        found = [c for c in candidates if c.exists()]
+        if found:
+            present.append((row, found[0]))
+        else:
+            missing.append(row)
+
+    orphans: list[Path] = []
+    if output_dir.is_dir():
+        for path in sorted(output_dir.iterdir()):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in {".txt", ".html"}:
+                continue  # manually imported files (e.g. PDFs) are out of scope
+            if path.name in expected_files:
+                continue
+            orphans.append(path)
+
+    return present, missing, orphans
+
+
 def verify_corpus(
     ticker: str,
     forms: list[str],
@@ -633,33 +689,8 @@ def verify_corpus(
             f"between {start or 'earliest available'} and {end}."
         )
 
-    names = output_names_for_targets(targets)
     output_dir = filings_dir(ticker_upper)
-    extensions = [output_extension(fmt) for fmt in ("txt", "raw", "html")]
-
-    present: list[tuple[FilingRecord, Path]] = []
-    missing: list[FilingRecord] = []
-    expected_files: set[str] = set()
-    for row in targets:
-        base = names[row.accession_number]
-        candidates = [output_dir / f"{base}{ext}" for ext in extensions]
-        expected_files.update(c.name for c in candidates)
-        found = [c for c in candidates if c.exists()]
-        if found:
-            present.append((row, found[0]))
-        else:
-            missing.append(row)
-
-    orphans: list[Path] = []
-    if output_dir.is_dir():
-        for path in sorted(output_dir.iterdir()):
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in {".txt", ".html"}:
-                continue  # manually imported files (e.g. PDFs) are out of scope
-            if path.name in expected_files:
-                continue
-            orphans.append(path)
+    present, missing, orphans = classify_corpus(output_dir, all_rows, targets)
 
     date_span = f"{start or 'earliest available'} .. {end}"
     click.echo(

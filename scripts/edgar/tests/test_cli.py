@@ -7,6 +7,7 @@ import pytest
 from edgar_filings.cli import (
     FilingRecord,
     assign_fiscal_labels,
+    classify_corpus,
     fiscal_label_from_report_date,
     output_names_for_targets,
     parse_submission_documents,
@@ -230,3 +231,64 @@ def test_submission_to_text_without_document_markers():
     text = submission_to_text(raw)
     assert "Plain filing." in text
     assert "junk" not in text
+
+
+def test_parse_submission_documents_warns_on_missing_text_block(capsys):
+    raw = (
+        "<DOCUMENT>\n<TYPE>6-K\n<TEXT>\n<p>Hello.</p>\n</TEXT>\n</DOCUMENT>\n"
+        "<DOCUMENT>\n<TYPE>EX-99\n<DESCRIPTION>BROKEN\n</DOCUMENT>\n"
+    )
+    docs = parse_submission_documents(raw)
+    assert [d.doc_type for d in docs] == ["6-K"]
+    captured = capsys.readouterr()
+    assert "warning: document EX-99 has no <TEXT> block; skipped" in captured.err
+
+
+def touch(directory, name):
+    path = directory / name
+    path.write_text("placeholder")
+    return path
+
+
+def test_classify_corpus_present_target(tmp_path):
+    target = row("t1", "10-K", "2026-02-10", "2025-12-31")
+    targets = assign_fiscal_labels([target])
+    name = output_names_for_targets(targets)[target.accession_number]
+    touch(tmp_path, f"{name}.txt")
+    present, missing, orphans = classify_corpus(tmp_path, targets, targets)
+    assert [r.accession_number for r, _ in present] == ["t1"]
+    assert missing == []
+    assert orphans == []
+
+
+def test_classify_corpus_out_of_range_file_not_orphan(tmp_path):
+    older = row("o1", "6-K", "2024-08-05", "2024-07-31")
+    target = row("t1", "6-K", "2026-08-05", "2026-07-31")
+    all_rows = assign_fiscal_labels([older, target])
+    targets = [r for r in all_rows if r.filing_date.year == 2026]
+    older_name = output_names_for_targets(all_rows)[older.accession_number]
+    touch(tmp_path, f"{older_name}.txt")
+    present, missing, orphans = classify_corpus(tmp_path, all_rows, targets)
+    assert present == []
+    assert [r.accession_number for r in missing] == ["t1"]
+    assert orphans == []
+
+
+def test_classify_corpus_unmatched_file_is_orphan(tmp_path):
+    target = row("t1", "10-K", "2026-02-10", "2025-12-31")
+    targets = assign_fiscal_labels([target])
+    touch(tmp_path, "1999_Q4_10-K_old.txt")
+    present, missing, orphans = classify_corpus(tmp_path, targets, targets)
+    assert present == []
+    assert [r.accession_number for r in missing] == ["t1"]
+    assert [p.name for p in orphans] == ["1999_Q4_10-K_old.txt"]
+
+
+def test_classify_corpus_ignores_non_text_files(tmp_path):
+    target = row("t1", "10-K", "2026-02-10", "2025-12-31")
+    targets = assign_fiscal_labels([target])
+    touch(tmp_path, "totally_unrelated.pdf")
+    present, missing, orphans = classify_corpus(tmp_path, targets, targets)
+    assert present == []
+    assert [r.accession_number for r in missing] == ["t1"]
+    assert orphans == []
