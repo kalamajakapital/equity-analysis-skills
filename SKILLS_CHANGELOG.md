@@ -25,6 +25,36 @@ One or two sentences describing the change.
 What output failure or gap motivated the change. Reference the benchmark evidence.
 -->
 
+## 2026-10-17 — edgar-filings
+
+| Field | Value |
+|---|---|
+| PR | <PR number — filled by maintainer at push/PR time> |
+| Author | @kalamajakapital |
+| Skills changed | `edgar-filings.md` |
+| Author benchmark | [`_benchmarks/_contributions/2026-10-17-edgar-filings/author.md`](_benchmarks/_contributions/2026-10-17-edgar-filings/author.md) |
+| Reviewer benchmark | pending |
+| Reviewer sign-off | pending |
+
+### What changed
+CLI fix: fiscal labels now derive from each filing's period date and the
+inferred fiscal-year-end month; event-form filenames (6-K, 8-K) are
+deterministic — always date- and accession-suffixed, independent of fetch
+scope; `txt` output converts every submission document including furnished
+exhibits; new `--verify` flag audits the on-disk corpus against EDGAR
+metadata without downloading. Skill doc updated to match. Tests: 28 pytest.
+
+### Why
+On WSE (18 six-Ks in a single range fetch), the pre-fix CLI overwrote the
+entire fetch into one file, mislabelled the Q2 FY27 earnings 6-K as
+`2026_Q4`, and dropped the results exhibit from `txt` output — the memo
+workflow was reading a cover page with no numbers. 8-K filers suffer the
+same collapse year-round (every 8-K labelled `{year}_Q4`). Discovered
+2026-10-17 during the WSE Q2 FY27 earnings update; the fix was forced by
+data loss, not preference.
+
+---
+
 ## 2026-03-31 — Initial release
 
 | Field | Value |

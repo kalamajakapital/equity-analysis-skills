@@ -1,4 +1,4 @@
-.PHONY: help install install-claude install-codex hooks develop
+.PHONY: help install install-claude install-codex hooks develop test
 
 help:
 	@printf '%s\n' \
@@ -29,3 +29,8 @@ develop:
 	@uv pip install --python .venv/bin/python --cache-dir .uv-cache -e scripts/edgar
 	@printf '%s\n' 'Launching a subshell with .venv activated. Exit that shell to return.'
 	@SHELL="$${SHELL:-/bin/zsh}"; . .venv/bin/activate && exec "$$SHELL" -i
+
+test:
+	@uv venv .venv --allow-existing
+	@uv pip install --python .venv/bin/python --cache-dir .uv-cache -e 'scripts/edgar[dev]'
+	@.venv/bin/python -m pytest scripts/edgar/tests/ -v

@@ -12,7 +12,7 @@ The CLI reads `SEC_EDGAR_EMAIL` and `SEC_EDGAR_COMPANY_NAME` from the shell envi
 
 Do not invent options. The CLI accepts only the following:
 
-```
+```text
 --ticker TEXT            Required. Ticker symbol, e.g. AAPL
 --filing TEXT            Form type to download. Repeatable. Default: 10-K
                          Accepted: 10-K, 10-Q, 20-F, 40-F, 6-K, 8-K
@@ -20,9 +20,40 @@ Do not invent options. The CLI accepts only the following:
                          matching filings in range.
 --range-end YYYY-MM-DD   Upper bound on filing date. Defaults to today.
 --output-format TEXT     txt (default) | html | raw
+--verify                 Audit on-disk filings against EDGAR metadata without
+                         downloading. Reports present / missing / unrecognized.
 ```
 
 There is no `--output-dir`. Output path is always `research/data/<TICKER>/filings/` — derived automatically.
+
+## Output behaviour
+
+- `txt` output converts every readable document in the SEC full submission
+  (cover page plus furnished exhibits), separated by `=== TYPE (DESCRIPTION) ===`
+  headers. For 6-K and 8-K filers the primary document is only a cover page —
+  the results content lives in exhibits such as EX-99.1. Never rely on the
+  cover page alone; check the file contains the exhibit before analysing.
+- Machine-readable XBRL taxonomy documents (EX-100 to EX-109) and binary or
+  data artifacts (images, ZIP, XLS, XML, JSON) are skipped.
+- Event forms (6-K, 8-K) ALWAYS carry the filing date and an accession
+  suffix — the name is deterministic and refetch-stable regardless of what
+  else is in the fetch: `2027_Q2_6-K_2026-10-15_282767.txt`. Periodic forms
+  (10-K, 10-Q, 20-F, 40-F) keep the short name: `2025_Q4_10-K.txt`.
+- `raw` output is the untouched SEC full submission. `html` output is the
+  primary document only — prefer `txt` or `raw` for 6-K and 8-K research.
+- Each output line reports the filing date and period:
+  `6-K 2026-10-15 (period 2026-09-30) -> research/data/WSE/filings/2027_Q2_6-K_2026-10-15_001564.txt`
+
+## Corpus audit
+
+After any multi-filing fetch, or before relying on an existing corpus, run:
+
+```bash
+.venv/bin/edgar-filings --ticker WSE --filing 6-K --verify
+```
+
+`UNRECOGNIZED` text files are candidates for deletion after confirming the
+replacement files are present and named correctly.
 
 ## Invocation
 
@@ -31,6 +62,7 @@ There is no `--output-dir`. Output path is always `research/data/<TICKER>/filing
 .venv/bin/edgar-filings --ticker AAPL --filing 10-K --filing 10-Q
 .venv/bin/edgar-filings --ticker AAPL --filing 10-K --range-start 2021-01-01 --range-end 2026-03-31
 .venv/bin/edgar-filings --ticker AAPL --output-format html
+.venv/bin/edgar-filings --ticker WSE --filing 6-K --verify
 ```
 
 When the user does not specify a filing type, default to `10-K`.
