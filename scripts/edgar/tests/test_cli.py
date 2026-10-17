@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 import pytest
 
@@ -14,13 +13,6 @@ from edgar_filings.cli import (
     parse_submission_documents,
     submission_to_text,
 )
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
-
-def load_fixture(name: str) -> str:
-    """Load a raw SEC full-submission fixture (the <SEC-DOCUMENT> container format)."""
-    return (FIXTURES_DIR / name).read_text()
 
 
 def row(
@@ -181,8 +173,8 @@ def test_8k_filings_get_labels_and_no_collision():
     assert names["g3"] == "2026_Q4_8-K_2026-11-09_g3"
 
 
-def test_8k_exhibit_included_in_txt():
-    text = submission_to_text(load_fixture("sample_submission_8k.txt"))
+def test_8k_exhibit_included_in_txt(sample_submission_8k):
+    text = submission_to_text(sample_submission_8k)
     assert "=== EX-99.1 (PRESS RELEASE) ===" in text
     assert "Net revenue increased 21% YoY" in text
 
@@ -199,14 +191,14 @@ def test_10q_range_starting_mid_year():
     assert (by_accession["h1"].fiscal_year_label, by_accession["h1"].fiscal_quarter) == (2026, 3)
 
 
-def test_parse_submission_documents():
-    docs = parse_submission_documents(load_fixture("sample_submission_6k.txt"))
+def test_parse_submission_documents(sample_submission_6k):
+    docs = parse_submission_documents(sample_submission_6k)
     assert [d.doc_type for d in docs] == ["6-K", "EX-99.1", "EX-101"]
     assert docs[1].description == "PRESS RELEASE"
 
 
-def test_submission_to_text_includes_exhibit():
-    text = submission_to_text(load_fixture("sample_submission_6k.txt"))
+def test_submission_to_text_includes_exhibit(sample_submission_6k):
+    text = submission_to_text(sample_submission_6k)
     assert "=== 6-K (FORM 6-K) ===" in text
     assert "Cover page for the quarter ended" in text
     assert "=== EX-99.1 (PRESS RELEASE) ===" in text
@@ -215,19 +207,21 @@ def test_submission_to_text_includes_exhibit():
     assert "739.1" in text
 
 
-def test_submission_to_text_skips_xbrl_taxonomy():
-    text = submission_to_text(load_fixture("sample_submission_6k.txt"))
+def test_submission_to_text_skips_xbrl_taxonomy(sample_submission_6k):
+    text = submission_to_text(sample_submission_6k)
     assert "machine-readable-noise" not in text
 
 
-def test_submission_to_text_without_document_markers():
-    text = submission_to_text(load_fixture("submission_no_document_markers.txt"))
+def test_submission_to_text_without_document_markers(submission_no_document_markers):
+    text = submission_to_text(submission_no_document_markers)
     assert "Plain filing." in text
     assert "junk" not in text
 
 
-def test_parse_submission_documents_warns_on_missing_text_block(capsys):
-    docs = parse_submission_documents(load_fixture("submission_missing_text_block.txt"))
+def test_parse_submission_documents_warns_on_missing_text_block(
+    submission_missing_text_block, capsys
+):
+    docs = parse_submission_documents(submission_missing_text_block)
     assert [d.doc_type for d in docs] == ["6-K"]
     captured = capsys.readouterr()
     assert "warning: document EX-99 has no <TEXT> block; skipped" in captured.err
