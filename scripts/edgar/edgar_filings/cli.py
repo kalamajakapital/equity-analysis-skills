@@ -10,6 +10,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
 
+from collections import Counter
+
 import click
 from sec_edgar_downloader import Downloader
 from sec_edgar_downloader._constants import (
@@ -170,8 +172,30 @@ def fetch_submission_rows(
     return assign_fiscal_labels(sorted(rows, key=lambda row: row.filing_date))
 
 
+def infer_fy_end_month(rows: list[FilingRecord]) -> int | None:
+    """Infer the fiscal-year-end month from the first annual report's period date."""
+    for row in rows:
+        if row.form in ANNUAL_FORMS and row.report_date is not None:
+            return row.report_date.month
+    return None
+
+
+def fiscal_label_from_report_date(report_date: date, fy_end_month: int) -> tuple[int, int]:
+    """Return (fiscal_year, quarter) for a periodic filing.
+
+    Fiscal years are labelled by the calendar year in which they end. A period
+    ending exactly on the fiscal year-end is Q4 of the fiscal year ending that
+    year; later periods belong to the following fiscal year.
+    """
+    month_diff = (report_date.month - fy_end_month) % 12
+    quarter = 4 if month_diff == 0 else (month_diff - 1) // 3 + 1
+    fiscal_year = report_date.year + (1 if report_date.month > fy_end_month else 0)
+    return fiscal_year, quarter
+
+
 def assign_fiscal_labels(rows: list[FilingRecord]) -> list[FilingRecord]:
     labeled: list[FilingRecord] = []
+    fy_end_month = infer_fy_end_month(rows)
     active_fiscal_year: int | None = None
     next_quarter = 1
 
@@ -180,10 +204,11 @@ def assign_fiscal_labels(rows: list[FilingRecord]) -> list[FilingRecord]:
             if row.report_date is None:
                 fiscal_year = row.filing_date.year
             else:
-                fiscal_year = (
-                    row.report_date.year - 1
-                    if row.report_date.month <= 3
-                    else row.report_date.year
+                end_month = (
+                    fy_end_month if fy_end_month is not None else row.report_date.month
+                )
+                fiscal_year = row.report_date.year + (
+                    1 if row.report_date.month > end_month else 0
                 )
 
             labeled.append(
@@ -201,6 +226,25 @@ def assign_fiscal_labels(rows: list[FilingRecord]) -> list[FilingRecord]:
             next_quarter = 1
             continue
 
+        if row.report_date is not None and fy_end_month is not None:
+            fiscal_year, quarter = fiscal_label_from_report_date(
+                row.report_date, fy_end_month
+            )
+            labeled.append(
+                FilingRecord(
+                    accession_number=row.accession_number,
+                    form=row.form,
+                    filing_date=row.filing_date,
+                    report_date=row.report_date,
+                    primary_document=row.primary_document,
+                    fiscal_year_label=fiscal_year,
+                    fiscal_quarter=quarter,
+                )
+            )
+            continue
+
+        # Fallback when no period date is available: assign quarters
+        # sequentially after the most recent annual report.
         fiscal_year = active_fiscal_year
         quarter = next_quarter if next_quarter <= 3 else None
 
@@ -375,6 +419,103 @@ def convert_html_to_text(contents: str) -> str:
     return text.strip() + "\n"
 
 
+# Submission document types that are machine-readable XBRL taxonomies or
+# binary artifacts, not readable filing content.
+SKIP_DOCUMENT_TYPES = re.compile(
+    r"^(EX-10[0-9]|GRAPHIC|ZIP|XLS|XLSX|XML|JSON|EXCEL|PNG|JPG|JPEG|GIF|SVG)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class SubmissionDocument:
+    doc_type: str
+    description: str
+    content: str
+
+
+def parse_submission_documents(raw_submission: str) -> list[SubmissionDocument]:
+    """Split a full EDGAR submission text file into its <DOCUMENT> sections."""
+    documents: list[SubmissionDocument] = []
+    chunks = re.split(r"<DOCUMENT>", raw_submission, flags=re.IGNORECASE)[1:]
+    for chunk in chunks:
+        type_match = re.search(r"<TYPE>\s*([^\r\n<]+)", chunk, re.IGNORECASE)
+        desc_match = re.search(r"<DESCRIPTION>\s*([^\r\n<]*)", chunk, re.IGNORECASE)
+        text_match = re.search(r"<TEXT>(.*?)</TEXT>", chunk, re.IGNORECASE | re.DOTALL)
+        if text_match is None:
+            continue
+        documents.append(
+            SubmissionDocument(
+                doc_type=(type_match.group(1) if type_match else "").strip().upper(),
+                description=(desc_match.group(1) if desc_match else "").strip(),
+                content=text_match.group(1),
+            )
+        )
+    return documents
+
+
+def submission_to_text(raw_submission: str) -> str:
+    """Convert every readable document in a full submission to text.
+
+    The primary document of a 6-K is typically only a cover page; the actual
+    content lives in furnished exhibits. Converting the whole submission keeps
+    cover and exhibits together in one readable file.
+    """
+    sections: list[str] = []
+    for document in parse_submission_documents(raw_submission):
+        if not document.doc_type and not document.content.strip():
+            continue
+        if SKIP_DOCUMENT_TYPES.match(document.doc_type):
+            continue
+        label = document.doc_type or "DOCUMENT"
+        if document.description:
+            label = f"{label} ({document.description})"
+        sections.append(f"=== {label} ===\n\n{convert_html_to_text(document.content)}")
+
+    if sections:
+        return "\n\n".join(sections) + "\n"
+
+    # Fallback: submission without <DOCUMENT> markers.
+    without_header = re.sub(
+        r"<SEC-HEADER>.*?</SEC-HEADER>", "", raw_submission,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return convert_html_to_text(without_header)
+
+
+def output_names_for_targets(targets: list[FilingRecord]) -> dict[str, str]:
+    """Map accession number to a collision-free output base name (no extension).
+
+    Filers commonly furnish several 6-Ks inside one fiscal quarter (earnings
+    releases, press responses, trading updates). Those all share a fiscal
+    label, so colliding names get the filing date appended, and same-day
+    filings additionally get an accession suffix.
+    """
+    base_names: dict[str, str] = {}
+    for row in targets:
+        fiscal_year = row.fiscal_year_label or row.filing_date.year
+        quarter = row.fiscal_quarter or 4
+        base_names[row.accession_number] = f"{fiscal_year}_Q{quarter}_{row.form}"
+
+    collision_counts = Counter(base_names.values())
+
+    names: dict[str, str] = {}
+    used: set[str] = set()
+    for row in targets:
+        base = base_names[row.accession_number]
+        if collision_counts[base] > 1:
+            name = f"{base}_{row.filing_date.isoformat()}"
+            if name in used:
+                name = f"{name}_{row.accession_number.replace('-', '')[-6:]}"
+        else:
+            name = base
+        while name in used:
+            name = f"{name}_x"
+        used.add(name)
+        names[row.accession_number] = name
+    return names
+
+
 def download_selected_filings(
     ticker: str,
     forms: list[str],
@@ -404,7 +545,9 @@ def download_selected_filings(
                 limit=None if start else 1,
                 after=after,
                 before=before,
-                download_details=output_format in {"txt", "html"},
+                # Only the html format needs the primary document itself;
+                # txt conversion reads every document from the full submission.
+                download_details=output_format == "html",
                 accession_numbers_to_skip={
                     row.accession_number
                     for row in targets
@@ -413,16 +556,7 @@ def download_selected_filings(
             )
 
             for row in form_targets:
-                if output_format == "raw":
-                    source_path = (
-                        Path(temp_dir)
-                        / ROOT_SAVE_FOLDER_NAME
-                        / ticker_upper
-                        / form
-                        / row.accession_number
-                        / FILING_FULL_SUBMISSION_FILENAME
-                    )
-                else:
+                if output_format == "html":
                     details_suffix = Path(row.primary_document).suffix.replace("htm", "html")
                     source_path = (
                         Path(temp_dir)
@@ -432,6 +566,15 @@ def download_selected_filings(
                         / row.accession_number
                         / f"primary-document{details_suffix}"
                     )
+                else:
+                    source_path = (
+                        Path(temp_dir)
+                        / ROOT_SAVE_FOLDER_NAME
+                        / ticker_upper
+                        / form
+                        / row.accession_number
+                        / FILING_FULL_SUBMISSION_FILENAME
+                    )
                 if source_path.exists():
                     paths_by_accession[row.accession_number] = source_path
 
@@ -439,25 +582,109 @@ def download_selected_filings(
         output_dir.mkdir(parents=True, exist_ok=True)
         written_paths: dict[str, Path] = {}
 
+        output_names = output_names_for_targets(targets)
+
         for row in targets:
             source_path = paths_by_accession.get(row.accession_number)
             if source_path is None:
                 continue
 
-            fiscal_year = row.fiscal_year_label or row.filing_date.year
-            quarter = row.fiscal_quarter or 4
-            output_name = f"{fiscal_year}_Q{quarter}_{row.form}{output_extension(output_format)}"
+            output_name = output_names[row.accession_number] + output_extension(output_format)
             output_path = output_dir / output_name
             source_text = source_path.read_text(errors="replace")
 
             if output_format == "txt":
-                output_path.write_text(convert_html_to_text(source_text))
+                output_path.write_text(submission_to_text(source_text))
             else:
                 output_path.write_text(source_text)
 
             written_paths[row.accession_number] = output_path
 
         return written_paths
+
+
+def verify_corpus(
+    ticker: str,
+    forms: list[str],
+    start: date | None,
+    end: date,
+    user_agent: str,
+) -> None:
+    """Compare the on-disk filing corpus against EDGAR metadata.
+
+    Reports which filings in the requested range are present, missing, and
+    which on-disk text artifacts no longer match any expected filename
+    (evidence of prior overwrite bugs or mislabelled downloads). Downloads
+    nothing.
+    """
+    ticker_upper = ticker.upper()
+    # Full history regardless of range so fiscal-year anchoring has annuals.
+    all_rows = fetch_submission_rows(ticker_upper, set(forms), None, user_agent)
+    targets = [
+        row
+        for row in all_rows
+        if row.form in forms
+        and row.filing_date <= end
+        and (start is None or row.filing_date >= start)
+    ]
+    if not targets:
+        raise click.ClickException(
+            f"No {', '.join(forms)} filings found for {ticker_upper} "
+            f"between {start or 'earliest available'} and {end}."
+        )
+
+    names = output_names_for_targets(targets)
+    output_dir = filings_dir(ticker_upper)
+    extensions = [output_extension(fmt) for fmt in ("txt", "raw", "html")]
+
+    present: list[tuple[FilingRecord, Path]] = []
+    missing: list[FilingRecord] = []
+    expected_files: set[str] = set()
+    for row in targets:
+        base = names[row.accession_number]
+        candidates = [output_dir / f"{base}{ext}" for ext in extensions]
+        expected_files.update(c.name for c in candidates)
+        found = [c for c in candidates if c.exists()]
+        if found:
+            present.append((row, found[0]))
+        else:
+            missing.append(row)
+
+    orphans: list[Path] = []
+    if output_dir.is_dir():
+        for path in sorted(output_dir.iterdir()):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in {".txt", ".html"}:
+                continue  # manually imported files (e.g. PDFs) are out of scope
+            if path.name in expected_files:
+                continue
+            orphans.append(path)
+
+    date_span = f"{start or 'earliest available'} .. {end}"
+    click.echo(
+        f"Verify {ticker_upper} ({', '.join(forms)}; {date_span}): "
+        f"{len(present)} present, {len(missing)} missing, {len(orphans)} unrecognized"
+    )
+
+    if present:
+        click.echo("Present:")
+        for row, path in present:
+            period = f" (period {row.report_date.isoformat()})" if row.report_date else ""
+            click.echo(f"  {row.form} {row.filing_date.isoformat()}{period} -> {path.name}")
+
+    if missing:
+        click.echo("MISSING (filings known to EDGAR but not on disk):")
+        for row in missing:
+            period = f" (period {row.report_date.isoformat()})" if row.report_date else ""
+            click.echo(f"  {row.form} {row.filing_date.isoformat()}{period}")
+
+    if orphans:
+        click.echo(
+            "UNRECOGNIZED text files (possible overwritten or mislabelled downloads):"
+        )
+        for path in orphans:
+            click.echo(f"  {path.name}")
 
 
 @click.command()
@@ -488,12 +715,20 @@ def download_selected_filings(
     show_default=True,
     help="Choose plain text, raw SEC submission, or HTML output.",
 )
+@click.option(
+    "--verify",
+    "verify_only",
+    is_flag=True,
+    default=False,
+    help="Compare on-disk filings against EDGAR metadata without downloading.",
+)
 def main(
     ticker: str,
     filings: tuple[str, ...],
     range_start: datetime | None,
     range_end: datetime | None,
     output_format: str,
+    verify_only: bool,
 ) -> None:
     """Download SEC EDGAR filings into research/data/<TICKER>/filings."""
 
@@ -508,6 +743,17 @@ def main(
         raise click.ClickException("--range-start cannot be later than --range-end.")
 
     forms = list(dict.fromkeys(filings))
+
+    if verify_only:
+        verify_corpus(
+            ticker=ticker_upper,
+            forms=forms,
+            start=start,
+            end=end,
+            user_agent=user_agent,
+        )
+        return
+
     rows = fetch_submission_rows(ticker_upper, set(forms), start, user_agent)
     if not rows:
         raise click.ClickException(f"No {', '.join(forms)} filings found for {ticker_upper}.")
@@ -536,7 +782,11 @@ def main(
         output_path = written_paths.get(row.accession_number)
         if output_path is None:
             continue
-        click.echo(f"{row.form} {row.filing_date.isoformat()} -> {output_path.relative_to(repo_root())}")
+        period = f" (period {row.report_date.isoformat()})" if row.report_date else ""
+        click.echo(
+            f"{row.form} {row.filing_date.isoformat()}{period} -> "
+            f"{output_path.relative_to(repo_root())}"
+        )
 
 
 if __name__ == "__main__":
