@@ -495,8 +495,11 @@ def submission_to_text(raw_submission: str) -> str:
 def output_names_for_targets(targets: list[FilingRecord]) -> dict[str, str]:
     """Map accession number to a collision-free output base name (no extension).
 
-    Determinism contract: same filing ⇒ same filename, independent of fetch
-    scope. Event-driven forms (6-K, 8-K) always carry the filing date and an
+    Determinism contract: same filing ⇒ same name. For rows carrying a
+    fiscal label the name is independent of fetch scope; rows that fall
+    back to sequential labelling (no report_date, no annual form in the
+    metadata) inherit scope dependence from the labelling layer.
+    Event-driven forms (6-K, 8-K) always carry the filing date and an
     accession suffix, because several of them land in the same fiscal quarter
     (earnings releases, press responses, trading updates) — the suffix is
     unconditional so the name never depends on what else is being fetched.
@@ -510,9 +513,22 @@ def output_names_for_targets(targets: list[FilingRecord]) -> dict[str, str]:
         quarter = row.fiscal_quarter or 4
         form = re.sub(r"[^A-Za-z0-9.-]", "_", row.form)
         base = f"{fiscal_year}_Q{quarter}_{form}"
+        # 6-K/A and 8-K/A amendments do not exact-match EVENT_FORMS, so they
+        # take the periodic branch below (quarter-anchored naming) — intentional.
         if row.form in EVENT_FORMS:
             accession6 = row.accession_number.replace("-", "")[-6:]
             name = f"{base}_{row.filing_date.isoformat()}_{accession6}"
+            # Theoretical-only guard: two distinct accessions sharing the
+            # same last-6 characters would silently map to one path. On
+            # collision, rebuild the name from the full dash-stripped
+            # accession (unique per filing) instead of appending scope-derived
+            # markers, so the name stays a pure function of the row. Because
+            # accession6 is stable per filing, the guard can never make a
+            # name depend on what else is being fetched.
+            if name in used:
+                name = f"{base}_{row.filing_date.isoformat()}_{row.accession_number.replace('-', '')}"
+            while name in used:
+                name = f"{name}_x"
         else:
             # Periodic filings are unique per period by construction, so the
             # catch-all below inspects the fetch set only for periodic-form
