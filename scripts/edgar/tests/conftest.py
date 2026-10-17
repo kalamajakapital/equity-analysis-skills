@@ -29,3 +29,9 @@ def submission_no_document_markers() -> str:
 def submission_missing_text_block() -> str:
     """Raw submission where one document lacks a <TEXT> block — exercises the warning path."""
     return (FIXTURES_DIR / "submission_missing_text_block.txt").read_text()
+
+
+@pytest.fixture
+def submission_unterminated_payload() -> str:
+    """Raw submission where the payload runs to EOF without </TEXT> — truncated-download case."""
+    return (FIXTURES_DIR / "submission_unterminated_payload.txt").read_text()
