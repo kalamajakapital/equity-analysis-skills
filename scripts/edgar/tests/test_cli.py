@@ -227,6 +227,15 @@ def test_parse_submission_documents_warns_on_missing_text_block(
     assert "warning: document EX-99 has no <TEXT> block; skipped" in captured.err
 
 
+def test_parse_submission_documents_warns_on_unterminated_payload(
+    submission_unterminated_payload, capsys
+):
+    docs = parse_submission_documents(submission_unterminated_payload)
+    assert docs == []
+    captured = capsys.readouterr()
+    assert "warning: document EX-99.1 has no <TEXT> block; skipped" in captured.err
+
+
 def touch(directory, name):
     path = directory / name
     path.write_text("placeholder")

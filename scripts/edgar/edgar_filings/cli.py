@@ -426,33 +426,83 @@ class SubmissionDocument:
 
 
 def parse_submission_documents(raw_submission: str) -> list[SubmissionDocument]:
-    """Split a full EDGAR submission text file into its <DOCUMENT> sections."""
-    documents: list[SubmissionDocument] = []
-    skipped_types: list[str] = []
-    chunks = re.split(r"<DOCUMENT>", raw_submission, flags=re.IGNORECASE)[1:]
-    for chunk in chunks:
-        type_match = re.search(r"<TYPE>\s*([^\r\n<]+)", chunk, re.IGNORECASE)
-        desc_match = re.search(r"<DESCRIPTION>\s*([^\r\n<]*)", chunk, re.IGNORECASE)
-        text_match = re.search(r"<TEXT>(.*?)</TEXT>", chunk, re.IGNORECASE | re.DOTALL)
-        if text_match is None:
-            skipped_types.append(
-                (type_match.group(1) if type_match else "").strip().upper()
-            )
-            continue
-        documents.append(
-            SubmissionDocument(
-                doc_type=(type_match.group(1) if type_match else "").strip().upper(),
-                description=(desc_match.group(1) if desc_match else "").strip(),
-                content=text_match.group(1),
-            )
-        )
+    """Split a full EDGAR submission text file into its <DOCUMENT> blocks.
 
-    if skipped_types:
-        for doc_type in skipped_types:
-            click.echo(
-                f"warning: document {doc_type or 'unnamed'} has no <TEXT> block; skipped",
-                err=True,
-            )
+    The submission container is a flat, line-oriented format, not HTML:
+
+        <DOCUMENT>
+        <TYPE>6-K
+        <DESCRIPTION>FORM 6-K        (optional)
+        <TEXT>
+        ...payload, usually HTML, parsed separately downstream...
+        </TEXT>
+        </DOCUMENT>
+
+    Header values are the rest of their line. Payload lines are passed
+    through verbatim. A block that ends without a payload is reported to
+    stderr and skipped. Anything before the first <DOCUMENT> (the
+    <SEC-DOCUMENT>/<SEC-HEADER> envelope) is ignored.
+    """
+    TYPE_PREFIX = "<TYPE>"
+    DESCRIPTION_PREFIX = "<DESCRIPTION>"
+
+    documents: list[SubmissionDocument] = []
+    missing_payload: list[str] = []
+    in_document = False
+    doc_type: str | None = None
+    description = ""
+    payload_lines: list[str] | None = None
+
+    for line in raw_submission.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if upper.startswith("<DOCUMENT>"):
+            in_document = True
+            doc_type = None
+            description = ""
+            payload_lines = None
+            continue
+        if not in_document:
+            continue
+        if payload_lines is not None:
+            if upper.startswith("</TEXT>"):
+                documents.append(
+                    SubmissionDocument(
+                        doc_type=doc_type or "DOCUMENT",
+                        description=description,
+                        content="\n".join(payload_lines),
+                    )
+                )
+                in_document = False
+                payload_lines = None
+            else:
+                payload_lines.append(line)
+            continue
+        if upper.startswith("<TEXT>"):
+            payload_lines = []
+            continue
+        if upper.startswith("</DOCUMENT>"):
+            missing_payload.append(doc_type or "unnamed")
+            in_document = False
+            continue
+        if upper.startswith(TYPE_PREFIX):
+            doc_type = stripped[len(TYPE_PREFIX):].strip().upper()
+            continue
+        if upper.startswith(DESCRIPTION_PREFIX):
+            description = stripped[len(DESCRIPTION_PREFIX):].strip()
+            continue
+
+    if payload_lines is not None:
+        # EOF inside a payload: no closing </TEXT> arrived. Treat as
+        # truncated and skip, matching the missing-payload case above.
+        missing_payload.append(doc_type or "unnamed")
+
+    for doc_type in missing_payload:
+        click.echo(
+            f"warning: document {doc_type} has no <TEXT> block; skipped",
+            err=True,
+        )
 
     return documents
 
