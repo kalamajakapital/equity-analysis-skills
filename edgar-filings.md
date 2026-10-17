@@ -33,7 +33,7 @@ There is no `--output-dir`. Output path is always `research/data/<TICKER>/filing
   headers. For 6-K and 8-K filers the primary document is only a cover page —
   the results content lives in exhibits such as EX-99.1. Never rely on the
   cover page alone; check the file contains the exhibit before analysing.
-- Machine-readable XBRL taxonomy documents (EX-100 to EX-107) are skipped.
+- Machine-readable XBRL taxonomy documents (EX-100 to EX-109) are skipped.
 - Filings sharing a fiscal quarter label (common for 6-K filers) get the
   filing date appended: `2027_Q2_6-K_2026-10-15.txt`. Same-day filings get an
   accession suffix. Unique quarterly labels keep the short name: `2027_Q1_6-K.txt`.
