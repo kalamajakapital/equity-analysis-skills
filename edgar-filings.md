@@ -34,13 +34,14 @@ There is no `--output-dir`. Output path is always `research/data/<TICKER>/filing
   the results content lives in exhibits such as EX-99.1. Never rely on the
   cover page alone; check the file contains the exhibit before analysing.
 - Machine-readable XBRL taxonomy documents (EX-100 to EX-109) are skipped.
-- Filings sharing a fiscal quarter label (common for 6-K filers) get the
-  filing date appended: `2027_Q2_6-K_2026-10-15.txt`. Same-day filings get an
-  accession suffix. Unique quarterly labels keep the short name: `2027_Q1_6-K.txt`.
+- Event forms (6-K, 8-K) ALWAYS carry the filing date and an accession
+  suffix — the name is deterministic and refetch-stable regardless of what
+  else is in the fetch: `2027_Q2_6-K_2026-10-15_282767.txt`. Periodic forms
+  (10-K, 10-Q, 20-F, 40-F) keep the short name: `2025_Q4_10-K.txt`.
 - `raw` output is the untouched SEC full submission. `html` output is the
   primary document only — prefer `txt` or `raw` for 6-K and 8-K research.
 - Each output line reports the filing date and period:
-  `6-K 2026-10-15 (period 2026-09-30) -> research/data/WSE/filings/2027_Q2_6-K_2026-10-15.txt`
+  `6-K 2026-10-15 (period 2026-09-30) -> research/data/WSE/filings/2027_Q2_6-K_2026-10-15_001564.txt`
 
 ## Corpus audit
 

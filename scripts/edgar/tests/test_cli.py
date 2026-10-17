@@ -116,16 +116,34 @@ def test_unique_label_keeps_base_name():
     assert names["d1"] == "2025_Q4_10-K"
 
 
-def test_colliding_quarter_names_get_filing_dates():
+def test_event_form_names_are_deterministic():
+    # Event forms (6-K, 8-K) always carry the filing date and an accession
+    # suffix, so the name never depends on what else is in the fetch.
     names = labeled(
         row("0000000000-26-000001", "20-F", "2026-05-20", "2026-03-31"),
         row("0000950142-26-001564", "6-K", "2026-10-15", "2026-09-30"),
         row("0001193125-26-282767", "6-K", "2026-10-15", "2026-09-30"),
         row("0001193125-26-200001", "6-K", "2026-08-05", "2026-07-31"),
     )
-    assert names["0001193125-26-200001"] == "2027_Q2_6-K_2026-08-05"
-    assert names["0000950142-26-001564"] == "2027_Q2_6-K_2026-10-15"
+    assert names["0001193125-26-200001"] == "2027_Q2_6-K_2026-08-05_200001"
+    assert names["0000950142-26-001564"] == "2027_Q2_6-K_2026-10-15_001564"
     assert names["0001193125-26-282767"] == "2027_Q2_6-K_2026-10-15_282767"
+
+
+def test_event_form_name_independent_of_fetch_scope():
+    r = row("0000950142-26-001564", "6-K", "2026-10-15", "2026-10-15")
+    # Annual anchor so fiscal labelling is identical in both scopes
+    # (production metadata always includes annual forms).
+    anchor = row("0000000000-26-000001", "20-F", "2026-05-20", "2026-03-31")
+    alone = output_names_for_targets(assign_fiscal_labels([anchor, r]))
+    in_set = output_names_for_targets(assign_fiscal_labels([
+        anchor,
+        row("0001193125-26-200001", "6-K", "2026-10-15", "2026-10-15"),
+        r,
+        row("0001193125-26-200009", "6-K", "2026-10-02", "2026-10-02"),
+    ]))
+    assert alone[r.accession_number] == in_set[r.accession_number]
+    assert alone[r.accession_number] == "2027_Q3_6-K_2026-10-15_001564"
 
 
 def test_distinct_quarters_do_not_collide():
@@ -134,8 +152,8 @@ def test_distinct_quarters_do_not_collide():
         row("f1", "6-K", "2026-07-16", "2026-06-30"),
         row("f2", "6-K", "2026-10-15", "2026-09-30"),
     )
-    assert names["f1"] == "2027_Q1_6-K"
-    assert names["f2"] == "2027_Q2_6-K"
+    assert names["f1"] == "2027_Q1_6-K_2026-07-16_f1"
+    assert names["f2"] == "2027_Q2_6-K_2026-10-15_f2"
 
 
 def test_8k_filings_get_labels_and_no_collision():
@@ -149,10 +167,10 @@ def test_8k_filings_get_labels_and_no_collision():
         row("g2b", "8-K", "2026-05-20", "2026-05-15"),
         row("g3", "8-K", "2026-11-09", "2026-11-06"),
     )
-    assert names["g1"] == "2026_Q1_8-K"
-    assert names["g2"] == "2026_Q2_8-K_2026-05-02"
-    assert names["g2b"] == "2026_Q2_8-K_2026-05-20"
-    assert names["g3"] == "2026_Q4_8-K"
+    assert names["g1"] == "2026_Q1_8-K_2026-03-15_g1"
+    assert names["g2"] == "2026_Q2_8-K_2026-05-02_g2"
+    assert names["g2b"] == "2026_Q2_8-K_2026-05-20_g2b"
+    assert names["g3"] == "2026_Q4_8-K_2026-11-09_g3"
 
 
 def test_8k_exhibit_included_in_txt():

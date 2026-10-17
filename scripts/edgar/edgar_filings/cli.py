@@ -4,7 +4,6 @@ import html
 import os
 import re
 import tempfile
-from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from html.parser import HTMLParser
@@ -26,6 +25,8 @@ from sec_edgar_downloader._sec_gateway import get_list_of_available_filings
 ANNUAL_FORMS = {"10-K", "10-K405", "10-KSB", "20-F", "40-F"}
 # Quarterly-report form types.
 QUARTERLY_FORMS = {"10-Q", "10-QSB", "6-K"}
+# Event-driven forms: multiple filings per fiscal quarter are expected.
+EVENT_FORMS = {"6-K", "8-K"}
 
 
 @dataclass(frozen=True)
@@ -494,32 +495,33 @@ def submission_to_text(raw_submission: str) -> str:
 def output_names_for_targets(targets: list[FilingRecord]) -> dict[str, str]:
     """Map accession number to a collision-free output base name (no extension).
 
-    Filers commonly furnish several 6-Ks inside one fiscal quarter (earnings
-    releases, press responses, trading updates). Those all share a fiscal
-    label, so colliding names get the filing date appended, and same-day
-    filings additionally get an accession suffix.
+    Determinism contract: same filing ⇒ same filename, independent of fetch
+    scope. Event-driven forms (6-K, 8-K) always carry the filing date and an
+    accession suffix, because several of them land in the same fiscal quarter
+    (earnings releases, press responses, trading updates) — the suffix is
+    unconditional so the name never depends on what else is being fetched.
+    Periodic forms (10-K, 10-Q, 20-F, 40-F) keep the short base name, which
+    is unique per fiscal period by construction.
     """
-    base_names: dict[str, str] = {}
+    names: dict[str, str] = {}
+    used: set[str] = set()
     for row in targets:
         fiscal_year = row.fiscal_year_label or row.filing_date.year
         quarter = row.fiscal_quarter or 4
         form = re.sub(r"[^A-Za-z0-9.-]", "_", row.form)
-        base_names[row.accession_number] = f"{fiscal_year}_Q{quarter}_{form}"
-
-    collision_counts = Counter(base_names.values())
-
-    names: dict[str, str] = {}
-    used: set[str] = set()
-    for row in targets:
-        base = base_names[row.accession_number]
-        if collision_counts[base] > 1:
-            name = f"{base}_{row.filing_date.isoformat()}"
-            if name in used:
-                name = f"{name}_{row.accession_number.replace('-', '')[-6:]}"
+        base = f"{fiscal_year}_Q{quarter}_{form}"
+        if row.form in EVENT_FORMS:
+            accession6 = row.accession_number.replace("-", "")[-6:]
+            name = f"{base}_{row.filing_date.isoformat()}_{accession6}"
         else:
+            # Periodic filings are unique per period by construction, so the
+            # catch-all below inspects the fetch set only for periodic-form
+            # collisions (e.g. a 10-Q/A amendment in the same fiscal quarter).
+            # Event forms never reach it: their suffix is unconditional,
+            # keeping their names a pure function of the row's own fields.
             name = base
-        while name in used:
-            name = f"{name}_x"
+            while name in used:
+                name = f"{name}_x"
         used.add(name)
         names[row.accession_number] = name
     return names
